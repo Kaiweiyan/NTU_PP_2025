@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
+#include <boost/functional/hash.hpp>
 using namespace std;
 
 /* === Position Structure === */
@@ -15,6 +16,16 @@ struct Position{
     bool operator==(const Position& other)const{
         return r == other.r && c == other.c;
     }
+
+    /* Hash */
+    struct Hash{
+        size_t operator()(const Position& p)const{
+            size_t seed = 0;
+            boost::hash_combine(seed, p.r);
+            boost::hash_combine(seed, p.c);
+            return seed;
+        }
+    };
 };
 
 /* === Global Variables === */
@@ -64,54 +75,6 @@ struct State{
         return true;
     }
 
-    bool try_move(char dir, State& new_state)const{
-        auto delta = DIR.at(dir);
-        Position newPos = {player.r + delta.r, player.c + delta.c};
-
-        if (newPos.r < 0 || newPos.r >= ROWS || newPos.c < 0 || newPos.c >= COLS)
-            return false;
-
-        char cell = MAP[newPos.r][newPos.c];
-        if (cell == '#')  // wall
-            return false;
-
-        bool isBox = false;
-        for (const auto& box : boxes){
-            if (box == newPos){
-                isBox = true;
-                break;
-            }
-        }
-
-        /* Move player to a empty space */
-        new_state = *this;
-        new_state.player = newPos;
-        new_state.path += dir;
-        if (!isBox) return true;
-
-        /* Move box */
-        Position boxNewPos = {newPos.r + delta.r, newPos.c + delta.c};
-        if (boxNewPos.r < 0 || boxNewPos.r >= ROWS || boxNewPos.c < 0 || boxNewPos.c >= COLS)
-            return false;
-        
-        char boxCell = MAP[boxNewPos.r][boxNewPos.c];
-        if (boxCell == '#' || boxCell == '@')  // wall or fragile tile
-            return false;
-        for (const auto& box : boxes)  // another box
-            if (box == boxNewPos)
-                return false;
-        
-        /* Valid move */
-        for (auto& box : new_state.boxes){
-            if (box == newPos){
-                box = boxNewPos;
-                break;
-            }
-        }
-        new_state.normalize();
-        return true;
-    }
-
     bool isDeadBox(const Position& box)const{
         if (MAP[box.r][box.c] == '.') return false; // on target
 
@@ -136,10 +99,12 @@ struct State{
     /* Hash */
     struct Hash{
         size_t operator()(const State& s)const{
-            size_t hash = (s.player.r << 16) ^ s.player.c;
-            for (auto& box : s.boxes)
-                hash ^= (box.r * 31 + box.c);
-            return hash;
+            size_t seed = 0;
+            for (const auto& box : s.boxes){
+                boost::hash_combine(seed, box.r);
+                boost::hash_combine(seed, box.c);
+            }
+            return seed;
         }
     };
 };
@@ -190,6 +155,76 @@ State loadState(const string& filename){
     return init;
 }
 
+bool is_free(const Position& pos, const State& state, bool isBox = false){
+    if (pos.r < 0 || pos.r >= ROWS || pos.c < 0 || pos.c >= COLS)
+        return false;
+    if (MAP[pos.r][pos.c] == '#')
+        return false;
+    if (MAP[pos.r][pos.c] == '@' && isBox)
+        return false;
+    for (const auto& box : state.boxes)
+        if (box == pos)
+            return false;
+    return true;
+}
+
+unordered_set<Position, Position::Hash> reachable_positions(const State& state){
+    unordered_set<Position, Position::Hash> reachable;
+    queue<Position> q;
+    q.push(state.player);
+    reachable.insert(state.player);
+
+    while (!q.empty()){
+        auto curr = q.front();
+        q.pop();
+        for (const auto& dir : {'W', 'A', 'S', 'D'}){
+            auto delta = DIR.at(dir);
+            Position newPos = {curr.r + delta.r, curr.c + delta.c};
+            if (!is_free(newPos, state)) continue;
+            if (reachable.find(newPos) == reachable.end()){
+                reachable.insert(newPos);
+                q.push(newPos);
+            }
+        }
+    }
+    return reachable;
+}
+
+string path_to(const State& state, const Position& target){
+    unordered_map<Position, Position, Position::Hash> parent;
+    queue<Position> q;
+    q.push(state.player);
+    parent[state.player] = {-1, -1};  // mark the root
+
+    while (!q.empty()){
+        auto curr = q.front();
+        q.pop();
+        if (curr == target) break;
+
+        for (const auto& dir : {'W', 'A', 'S', 'D'}){
+            auto delta = DIR.at(dir);
+            Position newPos = {curr.r + delta.r, curr.c + delta.c};
+            if (!is_free(newPos, state)) continue;
+            if (parent.find(newPos) == parent.end()){
+                parent[newPos] = curr;
+                q.push(newPos);
+            }
+        }
+    }
+
+    /* Reconstruct path */
+    string path;
+    for (Position pos = target; parent[pos].r != -1; pos = parent[pos]){
+        Position par = parent[pos];
+        if (pos.r == par.r + 1 && pos.c == par.c) path += 'S';
+        else if (pos.r == par.r - 1 && pos.c == par.c) path += 'W';
+        else if (pos.r == par.r && pos.c == par.c + 1) path += 'D';
+        else if (pos.r == par.r && pos.c == par.c - 1) path += 'A';
+    }
+    reverse(path.begin(), path.end());
+    return path;
+}
+
 /* === Solvers === */
 void bfs_solver(const State& init){
     queue<State> q;
@@ -207,11 +242,32 @@ void bfs_solver(const State& init){
             return;
         }
 
-        for (const auto& dir : {'W', 'A', 'S', 'D'}){
-            State new_state;
-            if (curr.try_move(dir, new_state) && visited.find(new_state) == visited.end() && !new_state.is_dead()){
-                visited.insert(new_state);
-                q.push(new_state);
+        auto reachable = reachable_positions(curr);
+
+        for (auto& box : curr.boxes){
+            for (const auto& dir : {'W', 'A', 'S', 'D'}){
+                auto delta = DIR.at(dir);
+                Position from = {box.r - delta.r, box.c - delta.c};
+                Position to = {box.r + delta.r, box.c + delta.c};
+
+                if (reachable.find(from) == reachable.end()) continue;  // player can not push the box
+                if (!is_free(to, curr, true)) continue;  // box can not be moved to position 'to'
+
+                State new_state = curr;
+                for (auto& b : new_state.boxes){
+                    if (b == box){
+                        b = to;
+                        break;
+                    }
+                }
+                new_state.player = box;  // player moves to the box's original position
+                new_state.normalize();
+                new_state.path = curr.path + path_to(curr, from) + dir;
+
+                if (!new_state.is_dead() && visited.find(new_state) == visited.end()){
+                    visited.insert(new_state);
+                    q.push(new_state);
+                }
             }
         }
     }
