@@ -45,8 +45,12 @@ vector<vector<vector<int>>> DIST;  // precomputed distances for heuristic
 struct State{
     Position player;
     vector<Position> boxes;
-    string path;
-    State* parent = nullptr;
+    struct action{
+        Position from;
+        char dir = 0;
+    } action;
+    int idx;
+    int parent_idx = -1;
 
     bool operator==(const State& other)const{
         return player == other.player && boxes == other.boxes;
@@ -108,45 +112,29 @@ struct State{
     bool isDeadBox(const Position& box)const{
         if (MAP[box.r][box.c] == '.') return false; // on target
 
-        bool wallUp = (MAP[box.r - 1][box.c] == '#');
-        bool wallDown = (MAP[box.r + 1][box.c] == '#');
-        bool wallLeft = (MAP[box.r][box.c - 1] == '#');
-        bool wallRight = (MAP[box.r][box.c + 1] == '#');
-        bool wallUpLeft = (MAP[box.r - 1][box.c - 1] == '#');
-        bool wallUpRight = (MAP[box.r - 1][box.c + 1] == '#');
-        bool wallDownLeft = (MAP[box.r + 1][box.c - 1] == '#');
-        bool wallDownRight = (MAP[box.r + 1][box.c + 1] == '#');
+        bool Up = (MAP[box.r - 1][box.c] == '#');
+        bool Down = (MAP[box.r + 1][box.c] == '#');
+        bool Left = (MAP[box.r][box.c - 1] == '#');
+        bool Right = (MAP[box.r][box.c + 1] == '#');
+        bool UpLeft = (MAP[box.r - 1][box.c - 1] == '#');
+        bool UpRight = (MAP[box.r - 1][box.c + 1] == '#');
+        bool DownLeft = (MAP[box.r + 1][box.c - 1] == '#');
+        bool DownRight = (MAP[box.r + 1][box.c + 1] == '#');
 
-        bool boxUp = false, boxDown = false, boxLeft = false, boxRight = false;
-        bool boxUpLeft = false, boxUpRight = false, boxDownLeft = false, boxDownRight = false;
         for (const auto& b : boxes){
-            if (b.r == box.r - 1 && b.c == box.c) boxUp = true;
-            if (b.r == box.r + 1 && b.c == box.c) boxDown = true;
-            if (b.r == box.r && b.c == box.c - 1) boxLeft = true;
-            if (b.r == box.r && b.c == box.c + 1) boxRight = true;
-            if (b.r == box.r - 1 && b.c == box.c - 1) boxUpLeft = true;
-            if (b.r == box.r - 1 && b.c == box.c + 1) boxUpRight = true;
-            if (b.r == box.r + 1 && b.c == box.c - 1) boxDownLeft = true;
-            if (b.r == box.r + 1 && b.c == box.c + 1) boxDownRight = true;
+            if (b.r == box.r - 1 && b.c == box.c) Up = true;
+            if (b.r == box.r + 1 && b.c == box.c) Down = true;
+            if (b.r == box.r && b.c == box.c - 1) Left = true;
+            if (b.r == box.r && b.c == box.c + 1) Right = true;
+            if (b.r == box.r - 1 && b.c == box.c - 1) UpLeft = true;
+            if (b.r == box.r - 1 && b.c == box.c + 1) UpRight = true;
+            if (b.r == box.r + 1 && b.c == box.c - 1) DownLeft = true;
+            if (b.r == box.r + 1 && b.c == box.c + 1) DownRight = true;
         }
 
-        /* Two boxes along a wall */
-        if (boxUp && ((wallLeft && wallUpLeft) || (wallRight && wallUpRight))) return true;
-        if (boxDown && ((wallLeft && wallDownLeft) || (wallRight && wallDownRight))) return true;
-        if (boxLeft && ((wallUp && wallUpLeft) || (wallDown && wallDownLeft))) return true;
-        if (boxRight && ((wallUp && wallUpRight) || (wallDown && wallDownRight))) return true;
-
-        /* Four boxes in a square */
-        if (boxUp && boxLeft && boxUpLeft) return true;
-        if (boxUp && boxRight && boxUpRight) return true;
-        if (boxDown && boxLeft && boxDownLeft) return true;
-        if (boxDown && boxRight && boxDownRight) return true;
-
-        /* Three boxes forming a L-shape in a wall corner */
-        if (wallUpLeft && boxUp && boxLeft) return true;
-        if (wallUpRight && boxUp && boxRight) return true;
-        if (wallDownLeft && boxDown && boxLeft) return true;
-        if (wallDownRight && boxDown && boxRight) return true;
+        /* If walls and boxes form a 2x2 square, it is a deadlock */
+        if ((Up && Left && UpLeft) || (Up && Right && UpRight)) return true;
+        if ((Down && Left && DownLeft) || (Down && Right && DownRight)) return true;
 
         return false;
     }
@@ -173,6 +161,8 @@ struct State{
     };
 };
 
+vector<State> NODES;
+
 /* === Helper Functions === */
 bool is_free(const Position& pos, const State& state, bool isBox = false, bool considerBoxes = true){
     if (pos.r < 0 || pos.r >= ROWS || pos.c < 0 || pos.c >= COLS)
@@ -189,25 +179,16 @@ bool is_free(const Position& pos, const State& state, bool isBox = false, bool c
 }
 
 void detect_simple_deadlocks(){
-    vector<Position> targets;
-
-    /* Find all target positions */
-    for (int r = 0; r < ROWS; r++)
-        for (int c = 0; c < COLS; c++)
-            if (MAP[r][c] == '.')
-                targets.push_back({r, c});
-
     /* All reachable positions for boxes from target */
     unordered_set<Position, Position::Hash> reachable;
 
-    for (const auto& target : targets){
+    for (const auto& target : TARGETS){
         queue<Position> q;
         unordered_set<Position, Position::Hash> visited;
         q.push(target);
         visited.insert(target);
         while (!q.empty()){
-            Position curr = q.front();
-            q.pop();
+            Position curr = q.front(); q.pop();
             reachable.insert(curr);
 
             for (const auto& dir : {'W', 'A', 'S', 'D'}){
@@ -227,7 +208,7 @@ void detect_simple_deadlocks(){
     for (int r = 0; r < ROWS; r++){
         for (int c = 0; c < COLS; c++){
             Position pos = {r, c};
-            if (MAP[r][c] == ' ' && reachable.find(pos) == reachable.end()){
+            if (MAP[r][c] == ' ' && reachable.count(pos) == 0){
                 MAP[r][c] = '@';
             }
         }
@@ -242,8 +223,7 @@ void compute_dist(){
         q.push(target);
         DIST[i][target.r][target.c] = 0;
         while (!q.empty()){
-            Position curr = q.front();
-            q.pop();
+            Position curr = q.front(); q.pop();
             for (const auto& dir : {'W', 'A', 'S', 'D'}){
                 auto delta = DIR.at(dir);
                 Position newPos = {curr.r + delta.r, curr.c + delta.c};
@@ -305,57 +285,67 @@ State loadState(const string& filename){
 
     ROWS = MAP.size();
     COLS = MAP[0].size();
+    
+    init.normalize();
+    init.idx = NODES.size();
+    NODES.push_back(init);
 
     detect_simple_deadlocks();
     compute_dist();
 
-    init.normalize();
     return init;
 }
 
-struct ReachResult{
+unordered_set<Position, Position::Hash> reachable_positions(const State& state){
     unordered_set<Position, Position::Hash> reachable;
-    unordered_map<Position, Position, Position::Hash> parent;
-};
-
-ReachResult reachable_positions(const State& state){
-    ReachResult res;
     queue<Position> q;
     q.push(state.player);
-    res.reachable.insert(state.player);
-    res.parent[state.player] = {-1, -1};  // mark the root
+    reachable.insert(state.player);
 
     while (!q.empty()){
-        auto curr = q.front();
-        q.pop();
+        auto curr = q.front(); q.pop();
         for (const auto& dir : {'W', 'A', 'S', 'D'}){
             auto delta = DIR.at(dir);
             Position newPos = {curr.r + delta.r, curr.c + delta.c};
             if (!is_free(newPos, state)) continue;
-            if (res.reachable.find(newPos) == res.reachable.end()){
-                res.reachable.insert(newPos);
-                res.parent[newPos] = curr;
-                q.push(newPos);
-            }
+            if (reachable.count(newPos)) continue;
+            reachable.insert(newPos);
+            q.push(newPos);
         }
     }
-    return res;
+    return reachable;
 }
 
-string path_to(const Position& target, const ReachResult& res){
-    auto reachable = res.reachable;
-    auto parent = res.parent;
-    if (reachable.find(target) == reachable.end())
-        return "";  // target not reachable
+string get_path(const Position& to, const State& state){
+    queue<Position> q;
+    unordered_map<Position, pair<Position, char>, Position::Hash> parent;
+    unordered_set<Position, Position::Hash> visited;
     
+    q.push(state.player);
+    visited.insert(state.player);
+
+    while (!q.empty()){
+        Position curr = q.front(); q.pop();
+        if (curr == to) break;
+
+        for (const auto& dir : {'W', 'A', 'S', 'D'}){
+            auto delta = DIR.at(dir);
+            Position newPos = {curr.r + delta.r, curr.c + delta.c};
+            if (!is_free(newPos, state)) continue;
+            if (visited.count(newPos)) continue;
+            visited.insert(newPos);
+            parent[newPos] = {curr, dir};
+            q.push(newPos);
+        }
+    }
+
     /* Reconstruct path */
     string path;
-    for (Position pos = target; parent[pos].r != -1; pos = parent[pos]){
-        Position par = parent[pos];
-        if (pos.r == par.r + 1 && pos.c == par.c) path += 'S';
-        else if (pos.r == par.r - 1 && pos.c == par.c) path += 'W';
-        else if (pos.r == par.r && pos.c == par.c + 1) path += 'D';
-        else if (pos.r == par.r && pos.c == par.c - 1) path += 'A';
+    Position curr = to;
+    while (!(curr == state.player)){
+        auto p = parent[curr];
+        path += p.second;
+        curr = p.first;
     }
     reverse(path.begin(), path.end());
     return path;
@@ -363,10 +353,14 @@ string path_to(const Position& target, const ReachResult& res){
 
 void print_path(const State& state){
     string full_path;
-    const State* curr = &state;
-    while (curr != nullptr){
-        full_path = curr->path + full_path;
-        curr = curr->parent;
+    int curr_idx = state.idx;
+    while (curr_idx != -1){
+        const State& curr = NODES[curr_idx];
+        if (curr.parent_idx != -1){
+            const State& parent = NODES[curr.parent_idx];
+            full_path = get_path(curr.action.from, parent) + curr.action.dir + full_path;
+        }
+        curr_idx = curr.parent_idx;
     }
     cout << full_path << "\n";
 }
@@ -381,16 +375,14 @@ void astar_solver(State& init){
     visited.insert(init);
 
     while (!pq.empty()){
-        State curr = pq.top();
-        pq.pop();
+        State curr = pq.top(); pq.pop();
 
         if (curr.is_solved()){
-            // print_path(curr);
-            cout << curr.path << "\n";
+            print_path(curr);
             return;
         }
 
-        auto ret = reachable_positions(curr);
+        auto reachable = reachable_positions(curr);
 
         for (auto& box : curr.boxes){
             for (const auto& dir : {'W', 'A', 'S', 'D'}){
@@ -398,7 +390,7 @@ void astar_solver(State& init){
                 Position from = {box.r - delta.r, box.c - delta.c};
                 Position to = {box.r + delta.r, box.c + delta.c};
 
-                if (ret.reachable.find(from) == ret.reachable.end()) continue;  // player can not push the box
+                if (reachable.count(from) == 0) continue;  // player can not reach position 'from' to push the box
                 if (!is_free(to, curr, true)) continue;  // box can not be moved to position 'to'
 
                 State new_state;
@@ -411,13 +403,14 @@ void astar_solver(State& init){
                     }
                 }
                 new_state.normalize();
-                if (new_state.is_dead() || visited.find(new_state) != visited.end()) continue;
+                if (new_state.is_dead() || visited.count(new_state)) continue;
 
-                new_state.parent = &curr;
-                new_state.path = curr.path + path_to(from, ret) + dir;
-                // new_state.path = path_to(from, ret) + dir;
+                new_state.action = {from, dir};
                 new_state.g_cost = curr.g_cost + 1;
                 new_state.compute_heuristic();
+                new_state.idx = NODES.size();
+                new_state.parent_idx = curr.idx;
+                NODES.push_back(new_state);
 
                 pq.push(new_state);
                 visited.insert(new_state);
@@ -430,11 +423,6 @@ void astar_solver(State& init){
 }
 
 int main(int argc, char* argv[]){
-    if (argc != 2){
-        cerr << "Usage: " << argv[0] << " <input_file>\n";
-        return 1;
-    }
-
     State state = loadState(argv[1]);
     astar_solver(state);
     return 0;
